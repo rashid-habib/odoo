@@ -1,3 +1,6 @@
 [submodule "addons_custom"]
 	path = addons_custom
 	url = git@github.com:rashid-habib/addons_custom.git
+[submodule "odoo_docs"]
+	path = odoo_docs
+	url = git@github.com:rashid-habib/odoo_docs.git
