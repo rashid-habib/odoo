@@ -755,7 +755,7 @@ class PosSession(models.Model):
             session_destination_id = picking_type.default_location_dest_id.id
 
         for order in self._get_closed_orders():
-            if order.company_id.anglo_saxon_accounting and order.is_invoiced or order.shipping_date:
+            if order._force_create_picking_real_time() or order.shipping_date:
                 continue
             destination_id = order.partner_id.property_stock_customer.id or session_destination_id
             if destination_id in lines_grouped_by_dest_location:
@@ -1707,9 +1707,18 @@ class PosSession(models.Model):
             self.name = self.env['ir.sequence'].with_context(company_id=self.config_id.company_id.id).next_by_code('pos.session')
 
     def _post_cash_details_message(self, state, expected, difference, notes):
-        message = (state + " difference: " + self.currency_id.format(difference) + '\n' +
-           state + " expected: " + self.currency_id.format(expected) + '\n' +
-           state + " counted: " + self.currency_id.format(expected + difference) + '\n')
+        expected_formatted = self.currency_id.format(expected)
+        difference_formatted = self.currency_id.format(difference)
+        counted_formatted = self.currency_id.format(expected + difference)
+
+        if state == 'Opening cash':
+            message = _("Opening cash difference: %s \n", difference_formatted)
+            message += _("Opening cash expected: %s \n", expected_formatted)
+            message += _("Opening cash counted: %s \n", counted_formatted)
+        else:
+            message = _("Closing difference: %s \n", difference_formatted)
+            message += _("Closing expected: %s \n", expected_formatted)
+            message += _("Closing counted: %s \n", counted_formatted)
 
         if notes:
             message += _('Opening control message: ')
@@ -1906,9 +1915,9 @@ class PosSession(models.Model):
 
     def log_partner_message(self, partner_id, action, message_type):
         if message_type == 'ACTION_CANCELLED':
-            body = 'Action cancelled ({ACTION})'.format(ACTION=action)
+            body = _('Action cancelled (%(ACTION)s)', ACTION=action)
         elif message_type == 'CASH_DRAWER_ACTION':
-            body = 'Cash drawer opened ({ACTION})'.format(ACTION=action)
+            body = _('Cash drawer opened (%(ACTION)s)', ACTION=action)
 
         self.message_post(body=body, author_id=partner_id)
 
