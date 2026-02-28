@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
-
 from lxml import etree
 from unittest import SkipTest
 from unittest.mock import patch
@@ -113,7 +112,8 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
         company.partner_id.bank_ids = [Command.create({
             'acc_number': '999999',
             'partner_id': company.partner_id.id,
-            'acc_holder_name': 'The Chosen One'
+            'acc_holder_name': 'The Chosen One',
+            'allow_out_payment': True,
         })]
 
         for ubl_cii_format in ['facturx', 'ubl_bis3']:
@@ -438,6 +438,62 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
             'zip': '8010',
         }])
 
+    def test_import_bill(self):
+        self.env['res.partner.bank'].sudo().create({
+            'acc_number': 'Test account',
+            'partner_id': self.company_data['company'].partner_id.id,
+            'allow_out_payment': True,
+        })
+        partner = self.env['res.partner'].create({
+            'name': "My Belgian Partner",
+            'vat': "BE0477472701",
+            'email': "mypartner@email.com",
+        })
+        invoice = self.env['account.move'].create({
+            'partner_id': partner.id,
+            'move_type': 'out_invoice',
+            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})]
+        })
+        invoice.action_post()
+        my_invoice_raw = self.env['account.edi.xml.ubl_bis3']._export_invoice(invoice)[0]
+        my_invoice_root = etree.fromstring(my_invoice_raw)
+        modifying_xpath = """<xpath expr="(//*[local-name()='LegalMonetaryTotal']/*[local-name()='TaxExclusiveAmount'])" position="replace">
+        <TaxExclusiveAmount currencyID="EUR"><!--Some valid XML
+comment-->1000.0</TaxExclusiveAmount></xpath>"""
+        xml_attachment = self.env['ir.attachment'].create({
+            'raw': etree.tostring(self.with_applied_xpath(my_invoice_root, modifying_xpath)),
+            'name': 'test_invoice.xml',
+        })
+        imported_invoice = self.import_attachment(xml_attachment, self.company_data["default_journal_purchase"])
+        self.assertRecordValues(imported_invoice.invoice_line_ids, [{
+            'amount_currency': 1000.00,
+            'quantity': 1.0}])
+
+    def test_importing_bill_shouldnt_set_current_company_bank_account(self):
+        partner = self.env['res.partner'].create({
+            'name': "My Belgian Partner",
+        })
+        invoice = self.env['account.move'].create({
+            'partner_id': partner.id,
+            'move_type': 'out_invoice',
+            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})]
+        })
+        invoice.action_post()
+        my_invoice_raw = self.env['account.edi.xml.ubl_bis3']._export_invoice(invoice)[0]
+        my_invoice_root = etree.fromstring(my_invoice_raw)
+        modifying_xpath = """
+            <xpath expr="(//*[local-name()='PaymentMeans']/*[local-name()='PaymentID'])" position="after">
+                <PayeeFinancialAccount><ID>Test account</ID></PayeeFinancialAccount>
+            </xpath>"""
+        xml_attachment = self.env['ir.attachment'].create({
+            'raw': etree.tostring(self.with_applied_xpath(my_invoice_root, modifying_xpath)),
+            'name': 'test_invoice.xml',
+        })
+        move = self.env['account.journal']\
+            .with_context(default_journal_id=self.company_data['default_journal_sale'].id)\
+            ._create_document_from_attachment(xml_attachment.id)
+        self.assertTrue(any('add your own bank account manually' in message.body for message in move.message_ids))
+
     def test_import_bill_without_tax(self):
         """ Test that no tax is set (even the default one) when importing a bill without tax."""
         self.env.ref('base.EUR').active = True  # EUR might not be active and is used in the xml testing file
@@ -496,6 +552,7 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
                 'partner_id': self.partner_a.id,
                 'bank_id': bank_ing.id,
                 'company_id': self.env.company.id,
+                'allow_out_payment': True,
             })
         invoice = self.env['account.move'].create({
             'partner_id': self.partner_a.id,
@@ -524,7 +581,10 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
             company.sdd_creditor_identifier = 'BE30ZZZ300D000000042'
             company_bank_journal = self.company_data['default_journal_bank']
             company_bank_journal.bank_acc_number = 'CH9300762011623852957'
-            company_bank_journal.bank_account_id.bank_id = bank_ing
+            company_bank_journal.bank_account_id.write({
+                'bank_id': bank_ing.id,
+                'allow_out_payment': True,
+            })
 
             mandate = self.env['sdd.mandate'].create({
                 'name': 'mandate ' + (self.partner_a.name or ''),
@@ -567,7 +627,7 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
         partner = self.partner_a
         partner.peppol_endpoint = '00000000001020304050'
         partner.country_id = self.env.ref('base.nl').id
-        partner.bank_ids = [Command.create({'acc_number': "0123456789"})]
+        partner.bank_ids = [Command.create({'acc_number': "0123456789", 'allow_out_payment': True})]
         invoice = self.env['account.move'].create({
             'partner_id': partner.id,
             'move_type': 'out_invoice',
@@ -586,34 +646,6 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
             'cbc': "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
             'cac': "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"})
         self.assertEqual(scheme_ID.attrib.get("schemeID"), "0190")
-
-    def test_bank_details_import(self):
-        acc_number = '1234567890'
-        partner_bank = self.env['res.partner.bank'].create({
-            'active': False,
-            'acc_number': acc_number,
-            'partner_id': self.partner_a.id
-        })
-        invoice = self.env['account.move'].create({
-            'partner_id': self.partner_a.id,
-            'move_type': 'in_invoice',
-            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})],
-        })
-        # will not raise sql constraint because the sql is not commited yet
-        self.env['account.edi.common']._import_retrieve_and_fill_partner_bank_details(invoice, [acc_number])
-        self.assertEqual(invoice.partner_bank_id, partner_bank, "Partner bank must be the same")
-        self.assertTrue(partner_bank.active, "Partner bank must be the activated")
-
-    def test_bank_details_import_duplicate(self):
-        acc_number = '1234567890'
-        invoice = self.env['account.move'].create({
-            'partner_id': self.partner_a.id,
-            'move_type': 'in_invoice',
-            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})],
-        })
-        # Importing should not try to create multiple partner bank records with the same account number.
-        # It would cause a traceback due to a unique constraint on the (sanitized) account number, partner pair.
-        self.env['account.edi.common']._import_retrieve_and_fill_partner_bank_details(invoice, [acc_number, acc_number])
 
     def test_send_and_print_extra_attachments(self):
         if self.env['ir.module.module']._get('test_mimetypes').state != 'installed':
@@ -748,6 +780,89 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
         })
         self.assertEqual(node[0].text, company.vat, "Company VAT fallback")
 
+    def test_import_and_group_lines_by_tax(self):
+        """
+        Test the group/ungroup lines action on account.move
+        """
+        self.env.ref('base.EUR').active = True
+        tax_16 = self.env["account.tax"].create({
+            'name': '16 %',
+            'amount_type': 'percent',
+            'type_tax_use': 'purchase',
+            'amount': 16.0,
+        })
+        tax_21 = self.env["account.tax"].create({
+            'name': '21 %',
+            'amount_type': 'percent',
+            'type_tax_use': 'purchase',
+            'amount': 21.0,
+        })
+
+        file_path = "bis3_bill_group_by_tax.xml"
+        file_path = f"{self.test_module}/tests/test_files/{file_path}"
+        with file_open(file_path, 'rb') as file:
+            xml_attachment = self.env['ir.attachment'].create({
+                'mimetype': 'application/xml',
+                'name': 'bis3_bill_group_by_tax.xml',
+                'raw': file.read(),
+            })
+        bill = self.import_attachment(xml_attachment)
+
+        # Should group lines by tax
+        bill.action_group_ungroup_lines_by_tax()
+        self.assertRecordValues(bill.invoice_line_ids, [
+            {
+                'quantity': 1.0,
+                'price_unit': 600.0,
+                'price_subtotal': 600.0,
+                'price_total': 696.00,
+                'tax_ids': tax_16.ids,
+            },
+            {
+                'quantity': 1.0,
+                'price_unit': 1300.0,
+                'price_subtotal': 1300.0,
+                'price_total': 1573.00,
+                'tax_ids': tax_21.ids,
+            },
+        ])
+        self.assertRecordValues(bill, [{
+            'amount_untaxed': 1900.0,
+            'amount_tax': 369,
+            'amount_total': 2269.00,
+        }])
+
+        # Should ungroup lines from xml
+        bill.action_group_ungroup_lines_by_tax()
+        self.assertRecordValues(bill.invoice_line_ids, [
+            {
+                'quantity': 1.0,
+                'price_unit': 600.0,
+                'price_subtotal': 600.0,
+                'price_total': 696.00,
+                'tax_ids': tax_16.ids,
+            },
+            {
+                'quantity': 1.0,
+                'price_unit': 300.0,
+                'price_subtotal': 300.0,
+                'price_total': 363.00,
+                'tax_ids': tax_21.ids,
+            },
+            {
+                'quantity': 2.0,
+                'price_unit': 500.0,
+                'price_subtotal': 1000.0,
+                'price_total': 1210.00,
+                'tax_ids': tax_21.ids,
+            },
+        ])
+        self.assertRecordValues(bill, [{
+            'amount_untaxed': 1900.0,
+            'amount_tax': 369,
+            'amount_total': 2269.00,
+        }])
+
     def test_ubl_split_fixed_taxes_into_allowance_charges_or_extra_invoice_lines(self):
         """Test that fixed taxes are split correctly:
         - fixed taxes that affect the base are exported as AllowanceCharge.
@@ -826,3 +941,23 @@ class TestAccountEdiUblCii(AccountTestInvoicingCommon):
             places=2,
             msg="TaxTotal != sum(TaxSubtotal)",
         )
+
+    def test_bank_details_import(self):
+        acc_number = '1234567890'
+        partner_bank = self.env['res.partner.bank'].create({
+            'active': False,
+            'acc_number': acc_number,
+            'partner_id': self.partner_a.id
+        })
+        invoice = self.env['account.move'].create({
+            'partner_id': self.partner_a.id,
+            'move_type': 'in_invoice',
+            'invoice_line_ids': [Command.create({'product_id': self.product_a.id})],
+        })
+        # will not raise sql constraint because the sql is not commited yet
+        self.env['account.edi.common']._import_retrieve_and_fill_partner_bank_details(invoice, [acc_number])
+        self.assertFalse(invoice.partner_bank_id)
+
+        partner_bank.active = True
+        self.env['account.edi.common']._import_retrieve_and_fill_partner_bank_details(invoice, [acc_number])
+        self.assertEqual(invoice.partner_bank_id, partner_bank)

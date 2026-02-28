@@ -146,6 +146,10 @@ class AccountEdiCommon(models.AbstractModel):
     # TAXES
     # -------------------------------------------------------------------------
 
+    def _is_reverse_charge_tax(self, tax):
+        """Check if tax is a reverse-charge tax (has negative factor repartition lines)"""
+        return any(line.factor_percent < 0 for line in tax.invoice_repartition_line_ids)
+
     def _validate_taxes(self, invoice):
         """ Validate the structure of the tax repartition lines (invalid structure could lead to unexpected results)
         """
@@ -193,12 +197,23 @@ class AccountEdiCommon(models.AbstractModel):
             if not tax or tax.amount == 0:
                 # in theory, you should indicate the precise law article
                 return create_dict(tax_category_code='E', tax_exemption_reason=_('Articles 226 items 11 to 15 Directive 2006/112/EN'))
+            elif self._is_reverse_charge_tax(tax):
+                # Special case: Purchase reverse-charge taxes for self-billed invoices.
+                # From the buyer's perspective, this is a standard tax with a non-zero percentage but
+                # two tax repartition lines that cancel each other out.
+                # But from the seller's perspective, this is a zero-percent tax (VAT liability is deferred
+                # to the buyer).
+                # For a self-billed invoice we, the buyer, create the invoice on behalf of the seller.
+                # So in the XML we put the zero-percent tax with code 'AE' that the seller would have used.
+                return create_dict(tax_category_code='AE')
             else:
                 return create_dict(tax_category_code='S')  # standard VAT
 
         if supplier.country_id.code in european_economic_area and supplier.vat:
-            if tax.amount != 0:
+            if tax.amount != 0 and not self._is_reverse_charge_tax(tax):
                 # otherwise, the validator will complain because G and K code should be used with 0% tax
+                # For purchase reverse-charge taxes for self-billed invoices, we put the zero-percent tax
+                # with code 'G' or 'K' that the buyer would have used, see explanation above.
                 return create_dict(tax_category_code='S')
             if customer.country_id.code not in european_economic_area:
                 return create_dict(
@@ -228,9 +243,15 @@ class AccountEdiCommon(models.AbstractModel):
         res = []
         for tax in taxes:
             tax_unece_codes = self._get_tax_unece_codes(invoice, tax)
+            # For reverse-charge taxes (with negative factor), percent should be 0.0
+            # From the seller's perspective, VAT liability is deferred to the buyer
+            if self._is_reverse_charge_tax(tax):
+                percent = 0.0
+            else:
+                percent = tax.amount if tax.amount_type == 'percent' else False
             res.append({
                 'id': tax_unece_codes.get('tax_category_code'),
-                'percent': tax.amount if tax.amount_type == 'percent' else False,
+                'percent': percent,
                 'name': tax_unece_codes.get('tax_exemption_reason'),
                 'tax_scheme_vals': {'id': 'VAT'},
                 **tax_unece_codes,
@@ -316,7 +337,7 @@ class AccountEdiCommon(models.AbstractModel):
 
         # Update the invoice.
         invoice.move_type = move_type
-        with invoice._get_edi_creation() as invoice:
+        with invoice.with_context(disable_onchange_name_predictive=True)._get_edi_creation() as invoice:
             logs = self._import_fill_invoice_form(invoice, tree, qty_factor)
         if invoice:
             body = Markup("<strong>%s</strong>") % \
@@ -332,7 +353,7 @@ class AccountEdiCommon(models.AbstractModel):
         # For UBL, we should override the computed tax amount if it is less than 0.05 different of the one in the xml.
         # In order to support use case where the tax total is adapted for rounding purpose.
         # This has to be done after the first import in order to let Odoo compute the taxes before overriding if needed.
-        with invoice._get_edi_creation() as invoice:
+        with invoice.with_context(disable_onchange_name_predictive=True)._get_edi_creation() as invoice:
             self._correct_invoice_tax_amount(tree, invoice)
 
         # === Import the embedded documents in the xml if some are found ===
@@ -395,39 +416,25 @@ class AccountEdiCommon(models.AbstractModel):
     def _import_retrieve_and_fill_partner_bank_details(self, invoice, bank_details):
         """ Retrieve the bank account, if no matching bank account is found, create it
         """
-
-        # clear the context, because creation of partner when importing should not depend on the context default values
-        ResPartnerBank = self.env['res.partner.bank'].with_env(self.env(context=clean_context(self.env.context)))
-        bank_details = list(set(map(sanitize_account_number, bank_details)))
-
-        if invoice.move_type not in ('out_refund', 'in_invoice'):
+        if invoice.move_type in ('out_refund', 'in_invoice'):
+            partner = invoice.partner_id
+        elif invoice.move_type in ('out_invoice', 'in_refund'):
+            partner = invoice.company_id.partner_id
+        else:
             return
-        partner = invoice.partner_id
 
-        banks_to_create = []
-        acc_number_partner_bank_dict = {
-            bank.sanitized_acc_number: bank
-            for bank in ResPartnerBank.with_context(active_test=False).search(
-                [('company_id', 'in', [False, invoice.company_id.id]), ('acc_number', 'in', bank_details)]
-            )
-        }
-
+        banks = self.env['res.partner.bank']
         for account_number in bank_details:
-            partner_bank = acc_number_partner_bank_dict.get(account_number, ResPartnerBank)
-
-            if partner_bank.partner_id == partner:
-                if not partner_bank.active:
-                    partner_bank.active = True
-                invoice.partner_bank_id = partner_bank
-                return
-            elif not partner_bank and account_number:
-                banks_to_create.append({
-                    'acc_number': account_number,
-                    'partner_id': partner.id,
-                })
-
-        if banks_to_create:
-            invoice.partner_bank_id = ResPartnerBank.create(banks_to_create)[0]
+            try:
+                banks += self.env['res.partner.bank']._find_or_create_bank_account(
+                    account_number=account_number,
+                    partner=partner,
+                    company=invoice.company_id,
+                )
+            except UserError as e:
+                invoice._message_log(body=_("The bank account couldn't be fetched: %s", str(e)))
+        if banks:
+            invoice.partner_bank_id = banks[0]
 
     def _import_fill_invoice_allowance_charge(self, tree, invoice, qty_factor):
         logs = []
@@ -677,8 +684,11 @@ class AccountEdiCommon(models.AbstractModel):
         # line_net_subtotal (mandatory)
         price_subtotal = None
         line_total_amount_node = tree.find(xpath_dict['line_total_amount'])
-        if line_total_amount_node is not None:
-            price_subtotal = float(line_total_amount_node.text)
+        if line_total_amount_node is None or line_total_amount_node.text is None or not line_total_amount_node.text.strip():
+            return None
+        price_subtotal = float(line_total_amount_node.text)
+        if price_subtotal == 0:
+            return None
 
         ####################################################
         # Setting the values on the invoice_line
@@ -768,7 +778,7 @@ class AccountEdiCommon(models.AbstractModel):
                 # company check is already done in the prediction query
                 predicted_tax_id = invoice_line\
                     ._predict_specific_tax('percent', amount, invoice_line.move_id.journal_id.type)
-                tax = self.env['account.tax'].browse(predicted_tax_id)
+                tax = self.env['account.tax'].browse(predicted_tax_id).filtered_domain(domain)[:1]
             if not tax:
                 tax = self.env['account.tax'].search(domain + [('price_include', '=', False)], limit=1)
             if not tax:
