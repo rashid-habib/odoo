@@ -117,7 +117,11 @@ class AccountMoveSend(models.AbstractModel):
 
         if invoice._need_ubl_cii_xml(invoice_data['invoice_edi_format']):
             builder = invoice.partner_id.commercial_partner_id._get_edi_builder(invoice_data['invoice_edi_format'])
-            xml_content, errors = builder._export_invoice(invoice)
+            xml_content, errors = (
+                builder
+                .with_context(from_peppol='peppol' in invoice_data['sending_methods'])
+                ._export_invoice(invoice)
+            )
             filename = builder._export_invoice_filename(invoice)
 
             # Failed.
@@ -146,7 +150,7 @@ class AccountMoveSend(models.AbstractModel):
         super()._hook_invoice_document_after_pdf_report_render(invoice, invoice_data)
 
         # Add PDF to XML
-        if 'ubl_cii_xml_options' in invoice_data and invoice_data['ubl_cii_xml_options']['ubl_cii_format'] != 'facturx':
+        if self._needs_ubl_postprocessing(invoice_data):
             self._postprocess_invoice_ubl_xml(invoice, invoice_data)
 
         # Always silently generate a Factur-X and embed it inside the PDF for inter-portability
@@ -205,10 +209,15 @@ class AccountMoveSend(models.AbstractModel):
         writer_buffer.close()
 
     @api.model
+    def _needs_ubl_postprocessing(self, invoice_data):
+        return 'ubl_cii_xml_options' in invoice_data and invoice_data['ubl_cii_xml_options']['ubl_cii_format'] != 'facturx'
+
+    @api.model
     def _postprocess_invoice_ubl_xml(self, invoice, invoice_data):
         # Adding the PDF to the XML
         tree = etree.fromstring(invoice_data['ubl_cii_xml_attachment_values']['raw'])
-        anchor_elements = tree.xpath("//*[local-name()='AccountingSupplierParty']")
+        project_refs = tree.xpath("//*[local-name()='ProjectReference']")
+        anchor_elements = project_refs if project_refs else tree.xpath("//*[local-name()='AccountingSupplierParty']")
         if not anchor_elements:
             return
 
