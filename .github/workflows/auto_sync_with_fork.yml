@@ -1,0 +1,28 @@
+name: Sync All Odoo Branches
+on:
+  schedule:
+    - cron: '0 2 * * *' # Runs daily at 2:00 AM
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync branches with upstream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Define your specific branches including 6.1
+          BRANCHES=("5.0" "6.0" "6.1" "7.0" "8.0" "9.0" "10.0" "11.0" "12.0" "13.0" "14.0" "15.0" "16.0" "17.0" "18.0" "19.0")
+          
+          for branch in "${BRANCHES[@]}"; do
+            echo "Syncing branch: $branch"
+            # gh repo sync [destination] -b [branch]
+            # By default, it syncs from the upstream parent
+            gh repo sync ${{ github.repository }} -b "$branch" || echo "Failed to sync $branch (check for conflicts)"
+          done

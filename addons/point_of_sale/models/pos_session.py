@@ -967,10 +967,10 @@ class PosSession(models.Model):
                 ])
                 for stock_moves_batch in split_every(PREFETCH_MAX, stock_moves._ids, stock_moves.browse):
                     for move in stock_moves_batch:
-                        product_accounts = move.product_id._get_product_accounts()
+                        product_accounts = move.with_company(move.company_id).product_id._get_product_accounts()
                         exp_key = product_accounts['expense']
                         stock_key = product_accounts['stock_valuation']
-                        signed_product_qty = move.quantity
+                        signed_product_qty = move.product_uom._compute_quantity(move.quantity, move.product_id.uom_id, round=False)
                         if move._is_in():
                             signed_product_qty *= -1
                         amount = signed_product_qty * move._get_price_unit()
@@ -1689,8 +1689,9 @@ class PosSession(models.Model):
         self.state = 'opened'
         self.start_at = fields.Datetime.now()
         cash_payment_method_ids = self.config_id.payment_method_ids.filtered(lambda pm: pm.is_cash_count)
-        if cash_payment_method_ids:
+        if notes:
             self.opening_notes = notes
+        if cash_payment_method_ids:
             difference = cashbox_value - self.cash_register_balance_start
             self._post_cash_details_message('Opening cash', self.cash_register_balance_start, difference, notes)
             self.cash_register_balance_start = cashbox_value
