@@ -1,7 +1,7 @@
 [submodule "odoo_addons"]
 	path = odoo_addons
 	url = ../odoo_addons.git
-	branch = 18.0
+	branch = .
 [submodule "odoo_resources"]
 	path = odoo_resources
 	url = ../odoo_resources.git
