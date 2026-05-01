@@ -7,3 +7,6 @@
     path = odoo_addons
     url = git@github.com:rashid-habib/odoo_addons.git
     branch = 19.0
+[submodule "odoo_addons_in_development"]
+	path = odoo_addons_in_development
+	url = git@github.com:rashid-habib/odoo_addons_in_development.git
