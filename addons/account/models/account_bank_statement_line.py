@@ -487,6 +487,9 @@ class AccountBankStatementLine(models.Model):
             ('payment_id', '=', False),
             # Special domain for statement lines.
             ('statement_line_id', '!=', self.id),
+            '|',
+            ('statement_line_id', '=', False),
+            ('statement_line_id.is_reconciled', '=', False),
         ]
 
     @api.model
@@ -619,7 +622,7 @@ class AccountBankStatementLine(models.Model):
         elif foreign_currency == company_currency:
             company_amount = transaction_amount
         else:
-            company_amount = journal_currency\
+            company_amount = journal_currency.sudo()\
                 ._convert(journal_amount, company_currency, self.journal_id.company_id, self.date)
 
         liquidity_line_vals = {

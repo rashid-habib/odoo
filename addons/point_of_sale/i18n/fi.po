@@ -45,9 +45,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 17.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-24 17:36+0000\n"
-"PO-Revision-Date: 2026-04-25 17:00+0000\n"
-"Last-Translator: Weblate <noreply-mt-weblate@weblate.org>\n"
+"POT-Creation-Date: 2026-05-08 17:36+0000\n"
+"PO-Revision-Date: 2026-05-16 08:09+0000\n"
+"Last-Translator: Saara Hakanen <sahak@odoo.com>\n"
 "Language-Team: Finnish <https://translate.odoo.com/projects/odoo-17/"
 "point_of_sale/fi/>\n"
 "Language: fi\n"
@@ -1308,7 +1308,7 @@ msgstr "Käteisen pyöristäminen (kassa)"
 #. module: point_of_sale
 #: model_terms:ir.ui.view,arch_db:point_of_sale.report_saledetails
 msgid "Cash Rounding:"
-msgstr ""
+msgstr "Käteisen pyöristäminen:"
 
 #. module: point_of_sale
 #: model_terms:ir.ui.view,arch_db:point_of_sale.res_config_settings_view_form
@@ -3374,7 +3374,7 @@ msgstr "LED-valaisin"
 #. module: point_of_sale
 #: model:ir.model.fields,field_description:point_of_sale.field_pos_payment__name
 msgid "Label"
-msgstr "Otsikko"
+msgstr "Nimike"
 
 #. module: point_of_sale
 #. odoo-javascript
@@ -5612,7 +5612,7 @@ msgstr "Tuotevariaatio"
 #: model:ir.actions.act_window,name:point_of_sale.product_product_action
 #: model:ir.ui.menu,name:point_of_sale.pos_config_menu_action_product_product
 msgid "Product Variants"
-msgstr "Tuotevariaatiot"
+msgstr "Tuotevariantit"
 
 #. module: point_of_sale
 #: model:ir.model,name:point_of_sale.model_pos_combo
@@ -5951,6 +5951,13 @@ msgstr "Pyydä laskua"
 #, python-format
 msgid "Request sent"
 msgstr "Pyyntö lähetetty"
+
+#. module: point_of_sale
+#. odoo-python
+#: code:addons/point_of_sale/models/pos_config.py:0
+#, python-format
+msgid "Rescue Sessions"
+msgstr "Pelastusistunnot"
 
 #. module: point_of_sale
 #. odoo-javascript
@@ -8519,7 +8526,7 @@ msgstr ""
 #. module: point_of_sale
 #: model_terms:ir.ui.view,arch_db:point_of_sale.report_saledetails
 msgid "Z"
-msgstr ""
+msgstr "Z"
 
 #. module: point_of_sale
 #. odoo-javascript
